@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'lan_bridge.dart';
 
 const HUB_URL = 'https://mc.salmanzahi.my.id';
 const RELAY_IP = '172.197.221.186';
@@ -30,6 +30,7 @@ class _WorldsPageState extends State<WorldsPage> {
   bool loading = true;
   String? error;
   Timer? timer;
+  World? broadcastingWorld;
 
   @override
   void initState() {
@@ -39,7 +40,12 @@ class _WorldsPageState extends State<WorldsPage> {
   }
 
   @override
-  void dispose() { timer?.cancel(); super.dispose(); }
+  void dispose() {
+    timer?.cancel();
+    // stop broadcast saat app ditutup
+    LanBridge.stopBroadcast();
+    super.dispose();
+  }
 
   Future<void> fetchWorlds() async {
     try {
@@ -55,6 +61,71 @@ class _WorldsPageState extends State<WorldsPage> {
     } catch (e) {
       setState(() { loading = false; error = 'Tidak bisa terhubung ke server'; });
     }
+  }
+
+  Future<void> toggleJoin(World world) async {
+    if (broadcastingWorld?.code == world.code) {
+      // sudah join -> stop
+      await LanBridge.stopBroadcast();
+      setState(() => broadcastingWorld = null);
+      _showSnack('Broadcast "${world.name}" dihentikan');
+      return;
+    }
+
+    // ganti world: stop lama dulu
+    if (broadcastingWorld != null) {
+      await LanBridge.stopBroadcast();
+    }
+
+    final ok = await LanBridge.startBroadcast(
+      name: world.name,
+      ip: RELAY_IP,
+      port: world.port,
+      players: world.players,
+    );
+
+    if (ok) {
+      setState(() => broadcastingWorld = world);
+      _showJoinInstructions(world);
+    } else {
+      _showSnack('Gagal memulai broadcast. Coba lagi.');
+    }
+  }
+
+  void _showSnack(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  void _showJoinInstructions(World world) {
+    showDialog(context: context, builder: (_) => AlertDialog(
+      backgroundColor: const Color(0xFF1A1F2E),
+      title: Row(children: [
+        const Icon(Icons.check_circle, color: Colors.green),
+        const SizedBox(width: 8),
+        const Expanded(child: Text('World Muncul di LAN!', style: TextStyle(fontSize: 17))),
+      ]),
+      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('"${world.name}" sekarang tampil di tab LAN Minecraft kamu.', style: const TextStyle(fontSize: 13)),
+        const SizedBox(height: 12),
+        const Text('Cara masuk:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+        const SizedBox(height: 6),
+        const Text('1. Buka Minecraft Bedrock', style: TextStyle(fontSize: 13)),
+        const Text('2. Tab Play → tunggu beberapa detik', style: TextStyle(fontSize: 13)),
+        Text('3. World "${world.name}" muncul di bagian LAN', style: const TextStyle(fontSize: 13)),
+        const Text('4. Tap & Join!', style: const TextStyle(fontSize: 13)),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(color: Colors.orange.withOpacity(.1), borderRadius: BorderRadius.circular(8)),
+          child: const Row(children: [
+            Icon(Icons.info_outline, size: 16, color: Colors.orange),
+            SizedBox(width: 6),
+            Expanded(child: Text('Biarkan app ini terbuka saat bermain.', style: TextStyle(fontSize: 11))),
+          ]),
+        ),
+      ]),
+      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Mengerti'))],
+    ));
   }
 
   @override
@@ -87,7 +158,15 @@ class _WorldsPageState extends State<WorldsPage> {
               : ListView.builder(
                   padding: const EdgeInsets.all(12),
                   itemCount: worlds.length,
-                  itemBuilder: (_, i) => WorldCard(world: worlds[i]),
+                  itemBuilder: (_, i) {
+                    final w = worlds[i];
+                    final isActive = broadcastingWorld?.code == w.code;
+                    return WorldCard(
+                      world: w,
+                      isJoined: isActive,
+                      onJoin: () => toggleJoin(w),
+                    );
+                  },
                 ),
       ),
     );
@@ -96,14 +175,20 @@ class _WorldsPageState extends State<WorldsPage> {
 
 class WorldCard extends StatelessWidget {
   final World world;
-  const WorldCard({super.key, required this.world});
+  final bool isJoined;
+  final VoidCallback onJoin;
+
+  const WorldCard({super.key, required this.world, required this.isJoined, required this.onJoin});
 
   @override
   Widget build(BuildContext context) {
     return Card(
-      color: const Color(0xFF171B26),
+      color: isJoined ? const Color(0xFF123326) : const Color(0xFF171B26),
       margin: const EdgeInsets.only(bottom: 10),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: isJoined ? BorderSide(color: Colors.green.withOpacity(.5)) : BorderSide.none,
+      ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -120,49 +205,39 @@ class WorldCard extends StatelessWidget {
                 const Text('LIVE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.green)),
               ]),
             ),
+            if (isJoined) ...[
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(color: Colors.blue.withOpacity(.15), borderRadius: BorderRadius.circular(20)),
+                child: const Text('LAN AKTIF', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.lightBlueAccent)),
+              ),
+            ],
             const Spacer(),
             Text('${world.players} pemain', style: const TextStyle(fontSize: 12, color: Colors.white38)),
           ]),
           const SizedBox(height: 10),
           Text(world.name, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
-          Text('Kode: ${world.code} · Port: ${world.port}',
+          Text('Kode: ${world.code} · Host: ${world.uptimeSec ~/ 60}m lalu',
             style: const TextStyle(fontSize: 12, color: Colors.white38)),
           const SizedBox(height: 14),
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF34D399),
-                foregroundColor: Colors.black,
+                backgroundColor: isJoined ? Colors.redAccent : const Color(0xFF34D399),
+                foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('JOIN WORLD'),
-              onPressed: () => showJoinInfo(context),
+              icon: Icon(isJoined ? Icons.stop : Icons.play_arrow),
+              label: Text(isJoined ? 'STOP LAN' : 'JOIN VIA LAN'),
+              onPressed: onJoin,
             ),
           ),
         ]),
       ),
     );
-  }
-
-  void showJoinInfo(BuildContext context) {
-    showDialog(context: context, builder: (_) => AlertDialog(
-      backgroundColor: const Color(0xFF1A1F2E),
-      title: const Text('Cara Join', style: TextStyle(fontSize: 18)),
-      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('1. Buka Minecraft Bedrock', style: TextStyle(fontSize: 13)),
-        const SizedBox(height: 6),
-        const Text('2. Tab Play → Servers → Add Server', style: TextStyle(fontSize: 13)),
-        const SizedBox(height: 6),
-        SelectableText('Server: $RELAY_IP', style: const TextStyle(fontSize: 14, color: Colors.greenAccent)),
-        SelectableText('Port: ${world.port}', style: const TextStyle(fontSize: 14, color: Colors.greenAccent)),
-        const SizedBox(height: 10),
-        const Text('(Fitur auto-inject LAN segera hadir)', style: TextStyle(fontSize: 11, color: Colors.white24)),
-      ]),
-      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
-    ));
   }
 }
