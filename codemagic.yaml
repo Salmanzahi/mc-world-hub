@@ -3,14 +3,15 @@ workflows:
     name: MC World Hub APK
     max_build_duration: 30
     environment:
-      flutter: "3.35.0"
+      flutter: "3.35.4"
+      java: "21"
     scripts:
       - name: Get dependencies
         script: |
           flutter packages pub get
       - name: Build APK
         script: |
-          flutter build apk --release
+          flutter build apk --release --android-skip-build-dependency-validation
     artifacts:
       - build/app/outputs/apk/release/app-release.apk
     publishing:
